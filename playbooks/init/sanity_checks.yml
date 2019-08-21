@@ -1,0 +1,58 @@
+---
+# l_sanity_check_hosts may be passed in during scale-up plays
+- name: Verify Requirements
+  hosts: oo_first_master
+  roles:
+  - role: openshift_facts
+  - role: lib_utils
+  tasks:
+  # sanity_checks is a custom action plugin defined in lib_utils.
+  # This module will loop through all the hostvars for each host
+  # specified in check_hosts.
+  # Since sanity_checks is an action_plugin, it executes on the control host.
+  # Thus, sanity_checks cannot gather new information about any hosts.
+  - name: Run variable sanity checks
+    sanity_checks:
+      check_hosts: "{{ l_sanity_check_hosts | default(groups['oo_all_hosts']) }}"
+  # node_group_checks is a custom action plugin defined in lib_utils.
+  - name: Validate openshift_node_groups and openshift_node_group_name
+    node_group_checks: {}
+
+# l_prereq_check_hosts may be passed in via playbooks/deploy_cluster.yml
+# and master/node scaleup plays
+- name: Verify Node Prerequisites
+  # We only want to run this on new installs and node/master scaleup.
+  hosts: "{{ l_prereq_check_hosts | default('all:!all') }}"
+
+  roles:
+  - role: openshift_facts
+
+  tasks:
+  - name: Check for NetworkManager service
+    command: 'systemctl show NetworkManager'
+    register: nm_show
+    changed_when: false
+    ignore_errors: True
+
+  # https://docs.openshift.com/container-platform/3.11/install/prerequisites.html#prereq-networkmanager
+  - name: Verify NetworkManager is active
+    fail:
+      msg: "NetworkManager must be installed and enabled prior to installation."
+    when:
+    - not ('ActiveState=active' in nm_show.stdout) | bool
+
+  # https://docs.openshift.com/container-platform/3.11/install/prerequisites.html#prereq-selinux
+  - name: Verify SELinux is enabled
+    fail:
+      msg: |
+        The openshift-enterprise deployment type requires SELinux is 'enforcing' with type 'targeted'
+        SELinux status: "{{ ansible_selinux.status | default ('Unable to determine SELinux status') }}"
+        SELinux mode: "{{ ansible_selinux.mode | default('') }}"
+        SELinux type: "{{ ansible_selinux.type | default('') }}"
+    when:
+    - ansible_selinux is not defined or
+      ansible_selinux.status | default ('') != 'enabled' or
+      ansible_selinux.mode | default ('') != 'enforcing' or
+      ansible_selinux.type | default ('') != 'targeted'
+    - openshift_deployment_type == 'openshift-enterprise'
+    - not openshift_use_crio | bool
